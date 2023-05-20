@@ -12,6 +12,7 @@ lazy val root = project
       "org.scalameta" %% "munit" % "0.7.29" % Test,
       "org.typelevel" %% "cats-effect" % "3.2.0",
       "org.scalactic" %% "scalactic" % "3.2.9",
-      "org.scalatest" %% "scalatest" % "3.2.9" % "test"
+      "org.scalatest" %% "scalatest" % "3.2.9" % "test",
+      "co.fs2" %% "fs2-core" % "3.2.4"
     )
   ).enablePlugins(JmhPlugin)
