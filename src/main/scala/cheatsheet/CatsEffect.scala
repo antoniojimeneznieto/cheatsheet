@@ -12,20 +12,31 @@ import cats.effect.kernel.Outcome.{Canceled, Errored, Succeeded}
 import cats.effect.std.Semaphore
 import cats.effect.std.CountDownLatch
 import cats.effect.std.CyclicBarrier
+
+// Polymorphic
+import cats.Applicative
+import cats.Monad
+import cats.effect.kernel.Poll
 import cats.effect.MonadCancel
 import cats.effect.Spawn
+import cats.effect.Concurrent
+import cats.effect.Temporal
+import cats.effect.Sync
+import cats.Defer
+import cats.effect.Async
 
 import java.io.{File, FileReader}
 import java.util.Scanner
 
-import scala.concurrent.duration.*
+import scala.concurrent.duration._
 import scala.io.StdIn
 import scala.util.Random
-import util.debug
+import util._
 import java.util.concurrent.Executors
 import scala.concurrent.ExecutionContext
 import scala.util.Try
 import scala.concurrent.Future
+
 
 object CatsEffect {
 
@@ -529,11 +540,24 @@ object CatsEffect {
   }
 
   def polymorphicCancellation() = {
-    import cats.syntax.flatMap._ // flatMap
-    import cats.syntax.functor._ // map
-
     // MonadCancel describes the capability to cancel & prevent cancellation
-    val monadCancelIO: MonadCancel[IO, Throwable] = MonadCancel[IO]
+    // MonadCancel extends from MonadError which extends from Monad and ApplicativeError which extends Applicative
+    trait MyApplicativeError[F[_], E] extends Applicative[F] {
+      def raiseError[A](error: E): F[A]
+      def handleErrorWith[A](fa: F[A])(f: E => F[A]): F[A]
+    }
+    trait MyMonadError[F[_], E] extends MyApplicativeError[F, E] with Monad[F]
+    trait MyMonadCancel[F[_], E] extends MyMonadError[F, E] {
+      def canceled: F[Unit]
+      def uncancelable[A](poll: Poll[F] => F[A]): F[A]
+    }
+
+    import cats.syntax.functor._ // map
+    import cats.syntax.flatMap._ // flatMap
+
+    val monadCancelIO: MonadCancel[IO, Throwable] =
+      MonadCancel[IO] // fetch given/implicit MonadCancel
+    // Capabilities: MONAD: pure, map/flatMap, APPLICATIVEERROR: raiseError, uncancelable
 
     // We can create values, because MonadCancel is a Monad
     val molIO: IO[Int] = monadCancelIO.pure(100)
@@ -555,13 +579,14 @@ object CatsEffect {
         } yield res
     }
 
-    import cats.effect.syntax.monadCancel._ // .onCancel
     // allow cancellation listeners
     val mustComputeWithListener = mustCompute.onCancel(IO("I'm being cancelled!").void)
     val mustComputeWithListener_v2 =
       monadCancelIO.onCancel(mustCompute, IO("I'm being cancelled!").void) // same
+    import cats.effect.syntax.monadCancel._ // .onCancel
 
-    val mustCompute_v2 = mustComputeGeneral[IO, Throwable]
+    val mustCompute_v2 =
+      mustComputeGeneral[IO, Throwable] // Read the monadCancelIO in the scope
     mustCompute_v2.onCancel(IO("I was cancelled!").void)
 
     // allow finalizers: guarantee, guaranteeCase
@@ -595,8 +620,9 @@ object CatsEffect {
     import cats.syntax.functor._ // map
     import cats.syntax.flatMap._ // flatMap
 
-    // capabilities: pure, map/flatMap, raiseError, uncancelable, start
     val spawnIO = Spawn[IO] // fetch the given/implicit Spawn[IO]
+    // Capabilities: pure, map/flatMap, raiseError, uncancelable + START / NEVER / CEDE
+
     def ioOnSomeThread[A](io: IO[A]): IO[Outcome[IO, Throwable, A]] = for {
       fib <- spawnIO.start(io) // io.start assumes the presence of a Spawn[IO]
       result <- fib.join
@@ -615,6 +641,144 @@ object CatsEffect {
 
   }
 
+  def polymorphicCoordination() = {
+    // Concurrent - Ref + Deferred for ANY effect type
+    trait MyConcurrent[F[_]] extends Spawn[F] {
+      def ref[A](a: A): F[Ref[F, A]]
+      def deferred[A]: F[Deferred[F, A]]
+    }
+
+    val concurrentIO = Concurrent[IO] // given instance of Concurrent[IO]
+    val aDeferred = Deferred[IO, Int] // given/implicit Concurrent[IO] in scope
+    val aDeferred_v2 = concurrentIO.deferred[Int]
+    val aRef = concurrentIO.ref(100)
+    // Capabilities: pure, map/flatMap, raiseError, uncancelable, start (fibers) + REF / DEFERRED
+
+    import cats.effect.syntax.spawn._ // start extension method
+    import cats.syntax.functor._ // map
+    import cats.syntax.flatMap._ // flatMap
+
+    def polymorphicEggBoiler[F[_]](using concurrent: Concurrent[F]): F[Unit] = {
+      def unsafeSleepDupe[F[_], E](duration: FiniteDuration)(
+          using mc: MonadCancel[F, E]): F[Unit] =
+        mc.pure(Thread.sleep(duration.toMillis))
+
+      def eggReadyNotification(signal: Deferred[F, Unit]) = for {
+        _ <- concurrent.pure("Egg boiling on some other fiber, waiting...").debug
+        _ <- signal.get
+        _ <- concurrent.pure("EGG READY!").debug
+      } yield ()
+
+      def tickingClock(counter: Ref[F, Int], signal: Deferred[F, Unit]): F[Unit] = for {
+        _ <- unsafeSleepDupe[F, Throwable](1.second)
+        count <- counter.updateAndGet(_ + 1)
+        _ <- concurrent.pure(count).debug
+        _ <- if (count >= 10) signal.complete(()).void else tickingClock(counter, signal)
+      } yield ()
+
+      for {
+        counter <- concurrent.ref(0)
+        signal <- concurrent.deferred[Unit]
+        notificationFib <- eggReadyNotification(signal).start
+        clock <- tickingClock(counter, signal).start
+        _ <- notificationFib.join
+        _ <- clock.join
+      } yield ()
+    }
+
+  }
+
+  def polymorphicTemporalSuspension() = {
+    // Temporal - time-blocking effects
+    trait MyTemporal[F[_]] extends Concurrent[F] {
+      def sleep(
+          time: FiniteDuration): F[Unit] // semantically blocks this fiber for a specified time
+    }
+
+    val temporalIO = Temporal[IO] // given Temporal[IO] in scope
+    // Capabilities: pure, map/flatMap, raiseError, uncancelable, start, ref/deferred + SLEEP
+
+    val chainOfEffects = IO("Loading...").debug *> IO.sleep(1.second) *> IO("Game ready!").debug
+    val chainOfEffects_v2 = temporalIO.pure("Loading...").debug *> temporalIO.sleep(
+      1.second) *> temporalIO.pure("Game ready!").debug // same
+  }
+
+  def polymorphicSync() = {
+    // synchronous computation
+    trait MySync[F[_]] extends MonadCancel[F, Throwable] with Defer[F] {
+      def delay[A](
+          thunk: => A): F[A] // "suspension" of a computation - will run on the CE thread pool
+      def blocking[A](thunk: => A): F[A] // runs on the blocking thread pool
+
+      // defer comes for free because we have flatMap (we extend from a monad) and delay
+      def defer[A](thunk: => F[A]): F[A] =
+        flatMap(delay(thunk))(identity)
+    }
+
+    val syncIO = Sync[IO] // given Sync[IO] in scope
+    // Capabilities: pure, map/flatMap, raiseError, uncancelable + DELAY / BLOCKING
+
+    val aDelayedIO_v2 = syncIO.delay {
+      println("side effect")
+      100
+    } // same as IO.delay {...}
+
+    val aBlockingIO_v2 = syncIO.blocking {
+      println("loading...")
+      Thread.sleep(1000)
+      42
+    } // same as IO.blocking {...}
+
+    val aDeferredIO = IO.defer(aDelayedIO_v2)
+
+  }
+
+  def polymorphicAsync() = {
+    // Async - asynchronous computations, "suspended" in F
+    trait MyAsync[F[_]] extends Sync[F] with Temporal[F] {
+      // fundamental description of async computations
+      def executionContext: F[ExecutionContext]
+      def async[A](cb: (Either[Throwable, A] => Unit) => F[Option[F[Unit]]]): F[A]
+      def evalOn[A](fa: F[A], ec: ExecutionContext): F[A]
+
+      def async_[A](cb: (Either[Throwable, A] => Unit) => Unit): F[A] =
+        async(kb => map(pure(cb(kb)))(_ => None))
+      def never[A]: F[A] = async_(_ => ())
+    }
+
+    val asyncIO = Async[IO] // given/implicit Async[IO]
+    // pure, map/flatMap, raiseError, uncancelable, start, ref/deferred, sleep, delay/defer/blocking + EC + ASYNC + EVALON
+
+    val ec = asyncIO.executionContext
+
+    val threadPool = Executors.newFixedThreadPool(10)
+    type Callback[A] = Either[Throwable, A] => Unit
+
+    val asyncComputation_v2: IO[Int] = asyncIO.async_ { (cb: Callback[Int]) =>
+      threadPool.execute { () =>
+        println(s"[${Thread.currentThread().getName}] Computing...")
+        cb(Right(1000))
+      }
+    } // same as IO.async_ {...}
+
+    val asyncMeaningOfLifeComplex_v2: IO[Int] = asyncIO.async { (cb: Callback[Int]) =>
+      IO {
+        threadPool.execute { () =>
+          println(s"[${Thread.currentThread().getName}] Computing")
+          cb(Right(1000))
+        }
+      }.as(
+        Some(IO("Cancelled!").debug.void)
+      ) // <-- finalizer in case the computation gets cancelled
+    } // same as IO.sync {...}
+
+    def exampleOfFunction[F[_], A](a: A)(using F: Async[F]): F[A] = {
+      F.delay {
+        println("Something")
+        a
+      }
+    }
+  }
 }
 
 object main extends IOApp.Simple {
@@ -628,4 +792,14 @@ object util {
       t = Thread.currentThread().getName
       _ = println(s"[$t] $a")
     } yield a
+
+  import cats.Functor
+  import cats.syntax.functor.*
+  extension [F[_], A](fa: F[A]) {
+    def debug(using functor: Functor[F]): F[A] = fa.map { a =>
+      val t = Thread.currentThread().getName
+      println(s"[$t] $a")
+      a
+    }
+  }
 }
