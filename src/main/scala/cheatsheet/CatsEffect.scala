@@ -12,6 +12,8 @@ import cats.effect.kernel.Outcome.{Canceled, Errored, Succeeded}
 import cats.effect.std.Semaphore
 import cats.effect.std.CountDownLatch
 import cats.effect.std.CyclicBarrier
+import cats.effect.MonadCancel
+import cats.effect.Spawn
 
 import java.io.{File, FileReader}
 import java.util.Scanner
@@ -24,7 +26,6 @@ import java.util.concurrent.Executors
 import scala.concurrent.ExecutionContext
 import scala.util.Try
 import scala.concurrent.Future
-
 
 object CatsEffect {
 
@@ -65,27 +66,28 @@ object CatsEffect {
     val throwFailure: IO[Int] = IO.raiseError(new RuntimeException("Error")) // == delay
 
     // Handle exception
-    throwFailure.handleErrorWith {
-      case _: RuntimeException => IO.delay(println("I am here!"))
-    }
+    throwFailure.handleErrorWith { case _: RuntimeException => IO.delay(println("I am here!")) }
 
     val failureAsEither: IO[Either[Throwable, Int]] = throwFailure.attempt
     failureAsEither.map {
       case Left(value) => IO.raiseError(value)
       case Right(value) => s"success $value"
     }
-    val redeem: IO[String] = throwFailure.redeem(recover = exception => s"$exception", map = value => s"$value")
+    val redeem: IO[String] =
+      throwFailure.redeem(recover = exception => s"$exception", map = value => s"$value")
   }
 
   def IOParallelism() = {
     // Parallel MapN
     val firstIO: IO[Int] = IO.pure(100)
     val secondIO: IO[String] = IO.pure("Hello")
-    val parallelMapN: IO[String] = (firstIO, secondIO).parMapN((x: Int, a: String) => s"value: $x, string: $a")
+    val parallelMapN: IO[String] =
+      (firstIO, secondIO).parMapN((x: Int, a: String) => s"value: $x, string: $a")
   }
 
   def IOTraversal() = {
-    val workLoad: List[String] = List("I quite like CE", "Scala is great", "looking forward to some awesome stuff")
+    val workLoad: List[String] =
+      List("I quite like CE", "Scala is great", "looking forward to some awesome stuff")
     def computeNumberOfWordsAsIO(string: String): IO[Int] = IO {
       Thread.sleep(Random.nextInt(1000))
       string.split(" ").length
@@ -94,7 +96,8 @@ object CatsEffect {
     // Traverse, useful to convert your list in an IO that can be started as a fiber
     val listOfIOs: List[IO[Int]] = workLoad.map(computeNumberOfWordsAsIO)
     val ioOfList: IO[List[Int]] = listOfIOs.parSequence // List[IO] to IO[List]
-    val iofList_v2: IO[List[Int]] = workLoad.parTraverse(computeNumberOfWordsAsIO) // IO[List] and apply map
+    val iofList_v2: IO[List[Int]] =
+      workLoad.parTraverse(computeNumberOfWordsAsIO) // IO[List] and apply map
   }
 
   def fibers() = {
@@ -131,13 +134,19 @@ object CatsEffect {
       def close(): IO[String] = IO(s"closing connection to $url").debug
     }
     // Bracket pattern
-    val connectionBracket = IO(new Connection("github.com")).bracket(conn => conn.open())(conn => conn.close().void)
+    val connectionBracket =
+      IO(new Connection("github.com")).bracket(conn => conn.open())(conn => conn.close().void)
 
     // Resources <3
-    val connectionResource = Resource.make(acquire = IO(new Connection("github.com")))(release = conn => conn.close().void)
+    val connectionResource =
+      Resource.make(acquire = IO(new Connection("github.com")))(release = conn =>
+        conn.close().void)
     def concatenateResources(path: String) = for {
-      scanner <- Resource.make(IO("opening file") >> IO(new Scanner(new FileReader(new File(path)))))(scanner => IO(scanner.close()))
-      conn <- Resource.make(IO("opening file") >> IO(new Connection(scanner.nextLine())))(conn => conn.close().void)
+      scanner <- Resource.make(
+        IO("opening file") >> IO(new Scanner(new FileReader(new File(path)))))(scanner =>
+        IO(scanner.close()))
+      conn <- Resource.make(IO("opening file") >> IO(new Connection(scanner.nextLine())))(
+        conn => conn.close().void)
     } yield conn
 
     // Guarantee
@@ -148,7 +157,6 @@ object CatsEffect {
       case Canceled() => IO("resource got canceled, releasing what's left").debug.void
     }
 
-
   }
 
   def racing() = {
@@ -158,7 +166,7 @@ object CatsEffect {
           IO.sleep(duration) >>
           IO(s"computation for $value: done") >>
           IO(value)
-        ).onCancel(IO(s"computation CANCELED for $value").debug.void)
+      ).onCancel(IO(s"computation CANCELED for $value").debug.void)
     val firstIO: IO[Int] = runWithSleep(1, 1.second)
     val secondIO: IO[String] = runWithSleep("Cats Effect", 2.second)
 
@@ -171,8 +179,14 @@ object CatsEffect {
 
     // Race pair:
     val racePair: IO[Either[
-      (Outcome[IO, Throwable, Int], Fiber[IO, Throwable, String]), // (winner result, loser fiber)
-      (Fiber[IO, Throwable, Int], Outcome[IO, Throwable, String])  // (loser fiber, winner result)
+      (
+          Outcome[IO, Throwable, Int],
+          Fiber[IO, Throwable, String]
+      ), // (winner result, loser fiber)
+      (
+          Fiber[IO, Throwable, Int],
+          Outcome[IO, Throwable, String]
+      ) // (loser fiber, winner result)
     ]] = IO.racePair(firstIO, secondIO)
     racePair.flatMap {
       case Left((num, fibString)) => fibString.cancel >> IO(num)
@@ -193,15 +207,21 @@ object CatsEffect {
     val uncancelableIO = cancelableIO.uncancelable
 
     // More complex example using poll
-    val inputPassword = IO("Input password:").debug >> IO("(typing password)").debug >> IO.sleep(2.seconds) >> IO("RockTheJVM1!")
-    val verifyPassword = (pw: String) => IO("verifying...").debug >> IO.sleep(2.seconds) >> IO(pw == "RockTheJVM1!")
+    val inputPassword =
+      IO("Input password:").debug >> IO("(typing password)").debug >> IO.sleep(2.seconds) >> IO(
+        "RockTheJVM1!")
+    val verifyPassword = (pw: String) =>
+      IO("verifying...").debug >> IO.sleep(2.seconds) >> IO(pw == "RockTheJVM1!")
 
     val authFlow: IO[Unit] = IO.uncancelable { poll =>
       for {
-        pw <- poll(inputPassword).onCancel(IO("Authentication timed out. Try again later.").debug.void) // this is cancelable because we wrapped the IO on poll()
+        pw <- poll(inputPassword).onCancel(
+          IO("Authentication timed out. Try again later.").debug.void
+        ) // this is cancelable because we wrapped the IO on poll()
         verified <- verifyPassword(pw) // this is NOT cancelable
-        _ <- if (verified) IO("Authentication successful.").debug // this is NOT cancelable
-        else IO("Authentication failed.").debug
+        _ <-
+          if (verified) IO("Authentication successful.").debug // this is NOT cancelable
+          else IO("Authentication failed.").debug
       } yield ()
     }
 
@@ -217,8 +237,10 @@ object CatsEffect {
 
     val iosOnManyThreads = for {
       _ <- IO("first").debug
-      _ <- IO.cede // a signal to yield control over the thread - equivalent to IO.shift from CE2
-      _ <- IO("second").debug // the rest of this effect may run on another thread (not necessarily)
+      _ <-
+        IO.cede // a signal to yield control over the thread - equivalent to IO.shift from CE2
+      _ <- IO(
+        "second").debug // the rest of this effect may run on another thread (not necessarily)
       _ <- IO.cede
       _ <- IO("third").debug
     } yield ()
@@ -230,23 +252,25 @@ object CatsEffect {
     val threadPool = Executors.newFixedThreadPool(8)
     implicit val ec: ExecutionContext = ExecutionContext.fromExecutorService(threadPool)
     type Callback[A] = Either[Throwable, A] => Unit
-    
+
     def computation(): Either[Throwable, Int] = Try {
       Thread.sleep(1000)
-      println(s"[${Thread.currentThread().getName}] computing the meaning of life on some other thread...")
+      println(
+        s"[${Thread.currentThread().getName}] computing the meaning of life on some other thread...")
       100
     }.toEither
 
     def computeOnThreadPool(): Unit = threadPool.execute(() => computation())
-    
+
     // Lift the computation to an IO:
-    val asyncIO: IO[Int] = IO.async_ { (cb: Callback[Int]) => // CE thread blocks (semantically) until this cb is invoked (by some other thread)
-      threadPool.execute { () => // computation not managed by CE
-        val result = computation()
-        cb(computation()) // CE thread is notified with the result
-      }
+    val asyncIO: IO[Int] = IO.async_ {
+      (cb: Callback[Int]) => // CE thread blocks (semantically) until this cb is invoked (by some other thread)
+        threadPool.execute { () => // computation not managed by CE
+          val result = computation()
+          cb(computation()) // CE thread is notified with the result
+        }
     }
-    
+
     // Lift an async computation (Future) to an IO:
     def convertFutureToIO[A](future: => Future[A]): IO[A] =
       IO.async_ { (cb: Callback[A]) =>
@@ -255,38 +279,39 @@ object CatsEffect {
           cb(result)
         }
       }
-    lazy val aFuture: Future[Int] = Future {     
+    lazy val aFuture: Future[Int] = Future {
       Thread.sleep(1000)
-      println(s"[${Thread.currentThread().getName}] computing the meaning of life on some other thread...")
-      42 
+      println(s"[${Thread.currentThread().getName}] computing on some other thread...")
+      100
     }
     val asyncIOFromFuture: IO[Int] = convertFutureToIO(aFuture)
     val asyncIOFromFuture_v2: IO[Int] = IO.fromFuture(IO(aFuture))
-    
+
     // Never ending IO:
     val neverEndingIO: IO[Int] = IO.async_[Int](_ => ()) // no callback, no finish
     val neverEndingIO_v2: IO[Int] = IO.never
-    
+
     // FULL ASYNC Call
     def demoAsyncCancellation() = {
-      val asyncMeaningOfLifeIO_v2: IO[Int] = IO.async { (cb: Callback[Int]) => // async block ce thread until it receives the callback
-        /*
+      val asyncComputation: IO[Int] = IO.async {
+        (cb: Callback[Int]) => // async block ce thread until it receives the callback
+          /*
           finalizer in case computation gets cancelled.
           finalizers are of type IO[Unit]
           not specifying finalizer => Option[IO[Unit]]
           creating option is an effect => IO[Option[IO[Unit]]]
-         */
-        // return IO[Option[IO[Unit]]]
-        IO {
-          threadPool.execute { () =>
-            val result = computation()
-            cb(result)
-          }
-        }.as(Some(IO("Cancelled!").debug.void))
+           */
+          // return IO[Option[IO[Unit]]]
+          IO {
+            threadPool.execute { () =>
+              val result = computation()
+              cb(result)
+            }
+          }.as(Some(IO("Cancelled!").debug.void))
       }
 
       for {
-        fib <- asyncMeaningOfLifeIO_v2.start
+        fib <- asyncComputation.start
         _ <- IO.sleep(500.millis) >> IO("cancelling...").debug >> fib.cancel
         _ <- fib.join
       } yield ()
@@ -304,7 +329,9 @@ object CatsEffect {
     val gsNum: IO[Int] = atomicNum.flatMap { ref => ref.getAndSet(100) }
     val updatedNum: IO[Unit] = atomicNum.flatMap { ref => ref.update(value => value * 10) }
     val ugNum: IO[Int] = atomicNum.flatMap { ref => ref.updateAndGet(value => value * 10) }
-    val modifiedDifferentType: IO[String] = atomicNum.flatMap { ref => ref.modify(value => (value * 10, s"my value is $value")) }
+    val modifiedDifferentType: IO[String] = atomicNum.flatMap { ref =>
+      ref.modify(value => (value * 10, s"my value is $value"))
+    }
 
     // Counting words with Ref
     def demoConcurrentWorkPure(): IO[Unit] = {
@@ -320,9 +347,10 @@ object CatsEffect {
 
       for {
         initialCount <- Ref[IO].of(0)
-        _ <- List("I love Cats Effect", "This ref thing is useless", "Daniel writes a lot of code")
-          .map(string => task(string, initialCount))
-          .parSequence
+        _ <- List(
+          "I love Cats Effect",
+          "This ref thing is useless",
+          "Daniel writes a lot of code").map(string => task(string, initialCount)).parSequence
       } yield ()
     }
   }
@@ -363,7 +391,10 @@ object CatsEffect {
         _ <- IO("Download completed").debug
       } yield ()
 
-      def downloadFilePart(part: String, contentRef: Ref[IO, String], signal: Deferred[IO, String]): IO[Unit] = for {
+      def downloadFilePart(
+          part: String,
+          contentRef: Ref[IO, String],
+          signal: Deferred[IO, String]): IO[Unit] = for {
         _ <- IO(s"Downloading part: $part").debug
         _ <- IO.sleep(1.second)
         latestContent <- contentRef.updateAndGet(currentContent => currentContent + part)
@@ -374,20 +405,20 @@ object CatsEffect {
         contentRef <- IO.ref("")
         signal <- IO.deferred[String]
         notifierFib <- notifyFileComplete(signal).start
-        downloadFib <- fileParts.map(part => downloadFilePart(part, contentRef, signal)).sequence.start
-      //downloadFib <- fileParts.map(part => downloadFilePart(part, contentRef, signal)).parSequence.start // == compute each part in parallel and merge final result
-      //downloadFib <- fileParts.traverse(part => downloadFilePart(part, contentRef, signal)).start
-      //downloadFib <- fileParts.parTraverse(part => downloadFilePart(part, contentRef, signal)).start
+        downloadFib <- fileParts
+          .map(part => downloadFilePart(part, contentRef, signal))
+          .sequence
+          .start
+        // downloadFib <- fileParts.map(part => downloadFilePart(part, contentRef, signal)).parSequence.start // == compute each part in parallel and merge final result
+        // downloadFib <- fileParts.traverse(part => downloadFilePart(part, contentRef, signal)).start
+        // downloadFib <- fileParts.parTraverse(part => downloadFilePart(part, contentRef, signal)).start
         _ <- downloadFib.join
         _ <- notifierFib.join
       } yield ()
     }
   }
 
-  def mutex() = {
-
-
-  }
+  def mutex() = {}
 
   def semaphores() = {
     // Create a Semaphore
@@ -423,19 +454,20 @@ object CatsEffect {
       def doWorkWhileLoggedIn(): IO[Int] = IO.sleep(1.second) >> IO(Random.nextInt(100))
       val mutex = Semaphore[IO](1)
 
-      val numbers = mutex.flatMap { sem => // otherwise we just create a new Semaphore for each fiber
-        (1 to 10).toList.parTraverse { id =>
-          for {
-            _ <- IO(s"[session $id] waiting to log in...").debug
-            _ <- sem.acquire
-            // critical section
-            _ <- IO(s"[session $id] logged in, working...").debug
-            res <- doWorkWhileLoggedIn()
-            _ <- IO(s"[session $id] done: $res, logging out...").debug
-            // end of critical section
-            _ <- sem.release
-          } yield res
-        }
+      val numbers = mutex.flatMap {
+        sem => // otherwise we just create a new Semaphore for each fiber
+          (1 to 10).toList.parTraverse { id =>
+            for {
+              _ <- IO(s"[session $id] waiting to log in...").debug
+              _ <- sem.acquire
+              // critical section
+              _ <- IO(s"[session $id] logged in, working...").debug
+              res <- doWorkWhileLoggedIn()
+              _ <- IO(s"[session $id] done: $res, logging out...").debug
+              // end of critical section
+              _ <- sem.release
+            } yield res
+          }
       }
     }
   }
@@ -479,7 +511,8 @@ object CatsEffect {
     def barriersExample() = {
       def createUser(id: Int, barrier: CyclicBarrier[IO]): IO[Unit] = for {
         _ <- IO.sleep((Random.nextDouble * 500).toInt.millis)
-        _ <- IO(s"[user $id] Just heard there's a new social network - signing up for the waitlist...").debug
+        _ <- IO(
+          s"[user $id] Just heard there's a new social network - signing up for the waitlist...").debug
         _ <- IO.sleep((Random.nextDouble * 1500).toInt.millis)
         _ <- IO(s"[user $id] On the waitlist now, can't wait!").debug
         _ <- barrier.await // block the fiber when there are exactly N users waiting
@@ -487,11 +520,99 @@ object CatsEffect {
       } yield ()
 
       def openNetwork(): IO[Unit] = for {
-        _ <- IO("[announcer] The social network is up for registration! Launching when we have 10 users!").debug
+        _ <- IO(
+          "[announcer] The social network is up for registration! Launching when we have 10 users!").debug
         barrier <- CyclicBarrier[IO](10)
         _ <- (1 to 20).toList.parTraverse(id => createUser(id, barrier))
       } yield ()
     }
+  }
+
+  def polymorphicCancellation() = {
+    import cats.syntax.flatMap._ // flatMap
+    import cats.syntax.functor._ // map
+
+    // MonadCancel describes the capability to cancel & prevent cancellation
+    val monadCancelIO: MonadCancel[IO, Throwable] = MonadCancel[IO]
+
+    // We can create values, because MonadCancel is a Monad
+    val molIO: IO[Int] = monadCancelIO.pure(100)
+    val ambitiousMolIO: IO[Int] = monadCancelIO.map(molIO)(_ * 10)
+
+    val mustCompute = monadCancelIO.uncancelable { _ =>
+      for {
+        _ <- monadCancelIO.pure("once started...")
+        res <- monadCancelIO.pure(56)
+      } yield res
+    }
+
+    // goal: can generalize code
+    def mustComputeGeneral[F[_], E](using mc: MonadCancel[F, E]): F[Int] = mc.uncancelable {
+      _ =>
+        for {
+          _ <- mc.pure("once started, I can't go back...")
+          res <- mc.pure(56)
+        } yield res
+    }
+
+    import cats.effect.syntax.monadCancel._ // .onCancel
+    // allow cancellation listeners
+    val mustComputeWithListener = mustCompute.onCancel(IO("I'm being cancelled!").void)
+    val mustComputeWithListener_v2 =
+      monadCancelIO.onCancel(mustCompute, IO("I'm being cancelled!").void) // same
+
+    val mustCompute_v2 = mustComputeGeneral[IO, Throwable]
+    mustCompute_v2.onCancel(IO("I was cancelled!").void)
+
+    // allow finalizers: guarantee, guaranteeCase
+    val aComputationWithFinalizers = monadCancelIO.guaranteeCase(IO(42)) {
+      case Succeeded(fa) => fa.flatMap(a => IO(s"successful: $a").void)
+      case Errored(e) => IO(s"failed: $e").void
+      case Canceled() => IO("canceled").void
+    }
+
+    // bracket pattern is specific to MonadCancel
+    // therefore Resources can only be built in the presence of a MonadCancel instance
+    val aComputationWithUsage = monadCancelIO.bracket(IO(42)) { value =>
+      IO(s"Using the meaning of life: $value")
+    } { value => IO("releasing the meaning of life...").void }
+  }
+
+  def polymorphicFibers() = {
+    // Spawn = create fibers for any effect
+    trait MyGenSpawn[F[_], E] extends MonadCancel[F, E] {
+      def start[A](fa: F[A]): F[Fiber[F, Throwable, A]] // creates a fiber
+      def never[A]: F[A] // a forever-suspending effect
+      def cede: F[Unit] // a "yield" effect
+
+      def racePair[A, B](fa: F[A], fb: F[B]): F[Either[ // fundamental racing
+        (Outcome[F, E, A], Fiber[F, E, B]),
+        (Fiber[F, E, A], Outcome[F, E, B])]]
+    }
+    trait MySpawn[F[_]] extends MyGenSpawn[F, Throwable]
+
+    import cats.effect.syntax.spawn._ // start extension method
+    import cats.syntax.functor._ // map
+    import cats.syntax.flatMap._ // flatMap
+
+    // capabilities: pure, map/flatMap, raiseError, uncancelable, start
+    val spawnIO = Spawn[IO] // fetch the given/implicit Spawn[IO]
+    def ioOnSomeThread[A](io: IO[A]): IO[Outcome[IO, Throwable, A]] = for {
+      fib <- spawnIO.start(io) // io.start assumes the presence of a Spawn[IO]
+      result <- fib.join
+    } yield result
+
+    // We generalize:
+    def effectOnSomeThread[F[_], A](fa: F[A])(
+        implicit spawn: Spawn[F]): F[Outcome[F, Throwable, A]] = for {
+      fib <- fa.start
+      result <- fib.join
+    } yield result
+
+    val myIO = IO.pure(100)
+    val molOnFiber = ioOnSomeThread(myIO)
+    val molOnFiber_v2 = effectOnSomeThread(myIO) // same
+
   }
 
 }
