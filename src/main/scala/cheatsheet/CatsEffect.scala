@@ -37,7 +37,6 @@ import scala.concurrent.ExecutionContext
 import scala.util.Try
 import scala.concurrent.Future
 
-
 object CatsEffect {
 
   def IOIntroduction() = {
@@ -557,7 +556,7 @@ object CatsEffect {
 
     val monadCancelIO: MonadCancel[IO, Throwable] =
       MonadCancel[IO] // fetch given/implicit MonadCancel
-    // Capabilities: MONAD: pure, map/flatMap, APPLICATIVEERROR: raiseError, uncancelable
+    // Capabilities: MONAD: pure, map/flatMap, APPLICATIVEERROR: raiseError + CANCELED / UNCANCELABLE
 
     // We can create values, because MonadCancel is a Monad
     val molIO: IO[Int] = monadCancelIO.pure(100)
@@ -590,7 +589,7 @@ object CatsEffect {
     mustCompute_v2.onCancel(IO("I was cancelled!").void)
 
     // allow finalizers: guarantee, guaranteeCase
-    val aComputationWithFinalizers = monadCancelIO.guaranteeCase(IO(42)) {
+    val aComputationWithFinalizers = monadCancelIO.guaranteeCase(IO(90)) {
       case Succeeded(fa) => fa.flatMap(a => IO(s"successful: $a").void)
       case Errored(e) => IO(s"failed: $e").void
       case Canceled() => IO("canceled").void
@@ -598,7 +597,7 @@ object CatsEffect {
 
     // bracket pattern is specific to MonadCancel
     // therefore Resources can only be built in the presence of a MonadCancel instance
-    val aComputationWithUsage = monadCancelIO.bracket(IO(42)) { value =>
+    val aComputationWithUsage = monadCancelIO.bracket(IO(90)) { value =>
       IO(s"Using the meaning of life: $value")
     } { value => IO("releasing the meaning of life...").void }
   }
@@ -631,7 +630,7 @@ object CatsEffect {
     // We generalize:
     def effectOnSomeThread[F[_], A](fa: F[A])(
         implicit spawn: Spawn[F]): F[Outcome[F, Throwable, A]] = for {
-      fib <- fa.start
+      fib <- fa.start // == spawn.start(fa)
       result <- fib.join
     } yield result
 
