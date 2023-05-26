@@ -39,6 +39,7 @@ object basicTree {
     def isLeaf: Boolean
     def collectLeaves: List[BTree[T]]
     def leafCount: Int
+    val size: Int
   }
 
   case object Bend extends BTree[Nothing] {
@@ -49,6 +50,7 @@ object basicTree {
     override def isLeaf: Boolean = false
     override def collectLeaves: List[BTree[Nothing]] = List()
     override def leafCount: Int = 0
+    override val size: Int = 0
   }
 
   case class BNode[+T](
@@ -72,6 +74,7 @@ object basicTree {
       collectLeavesAux(List(this), List())
     }
     override def leafCount: Int = collectLeaves.length
+    override val size: Int = 1 + left.size + right.size
 
   }
 }
@@ -81,7 +84,8 @@ object catsTree {
 
     def insert[F[_]: Concurrent, A: Ordering](tree: Option[Node[A]], newValue: A): F[Option[Node[A]]] = ??? // Impossible to parallelize ?
     
-    def search[F[_]: Concurrent, A](tree: Option[Node[A]], target: A): F[Option[A]] =
+    // Given a not sorted binary tree
+    def search[F[_]: Concurrent, A](tree: Option[Node[A]], target: A): F[Option[A]] = 
         tree match {
             case None => Concurrent[F].pure(None)
             case Some(node) => 
