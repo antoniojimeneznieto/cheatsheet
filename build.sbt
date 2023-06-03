@@ -14,6 +14,7 @@ lazy val root = project
       "org.scalactic" %% "scalactic" % "3.2.9",
       "org.scalatest" %% "scalatest" % "3.2.9" % "test",
       "co.fs2" %% "fs2-core" % "3.2.4", // FS2 is based on CE but we do not need to specify them as direct dependencies since it is already contained in FS2
-      "net.java.dev.jna" % "jna" % "5.8.0"
+      "net.java.dev.jna" % "jna" % "5.8.0",
+      "io.netty.incubator" % "netty-incubator-transport-native-io_uring" % "0.0.21.Final" classifier "linux-x86_64"
     )
   ).enablePlugins(JmhPlugin)
